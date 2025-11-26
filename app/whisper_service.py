@@ -1,31 +1,18 @@
-import requests
-import whisper
-import os
-from app.config import HF_API_URL, HF_API_KEY
+from transformers import pipeline
+import torch
+import tempfile
 
-headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+# Load Whisper Tiny pipeline once
+pipe = pipeline("automatic-speech-recognition", model="openai/whisper-tiny")
 
-# Load local whisper model once at startup
-local_model = whisper.load_model("tiny")
-
-
-class WhisperService:
-
-    @staticmethod
-    def transcribe_hf(audio_bytes: bytes):
-        """Transcribe using Hugging Face Whisper API"""
-        response = requests.post(
-            HF_API_URL,
-            headers=headers,
-            data=audio_bytes
-        )
-        try:
-            return response.json().get("text", "")
-        except:
-            return "Error: Could not parse response."
-
-    @staticmethod
-    def transcribe_local(file_path: str):
-        """Transcribe using Local Whisper"""
-        result = local_model.transcribe(file_path)
+def transcribe_audio_local(audio_bytes: bytes) -> str:
+    """
+    Transcribe audio bytes using Whisper Tiny pipeline
+    """
+    # Save bytes to a temporary file
+    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+        tmp.write(audio_bytes)
+        tmp.flush()
+        # Transcribe with pipeline
+        result = pipe(tmp.name)
         return result["text"]

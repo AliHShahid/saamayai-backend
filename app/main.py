@@ -1,50 +1,33 @@
-import os
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.whisper_service import WhisperService
+from app.whisper_service import transcribe_audio_local
 
 app = FastAPI(title="SaamayAI Backend")
 
-# CORS for Flutter
+# Enable CORS so Flutter can access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For Flutter mobile allow all
+    allow_origins=["*"],  # allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-TEMP_DIR = "temp"
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-
+# Root endpoint
 @app.get("/")
-async def home():
+def read_root():
     return {"message": "SaamayAI FastAPI running successfully!"}
 
-
-# ----------------------------------------------------------
-# 🔹 1 - Hugging Face Whisper API Route
-# ----------------------------------------------------------
-@app.post("/transcribe/hf")
-async def transcribe_hf(file: UploadFile = File(...)):
-    audio_bytes = await file.read()
-    text = WhisperService.transcribe_hf(audio_bytes)
-    return {"source": "huggingface", "transcription": text}
-
-
-# ----------------------------------------------------------
-# 🔹 2 - Local Whisper Model Route
-# ----------------------------------------------------------
+# Transcribe local audio
 @app.post("/transcribe/local")
 async def transcribe_local(file: UploadFile = File(...)):
-    file_path = f"{TEMP_DIR}/{file.filename}"
-
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
-
-    text = WhisperService.transcribe_local(file_path)
-
-    os.remove(file_path)  # clean temp file
-
-    return {"source": "local", "transcription": text}
+    if file.content_type not in ["audio/wav", "audio/mpeg", "audio/mp3"]:
+        raise HTTPException(status_code=400, detail="Invalid audio format")
+    
+    try:
+        # Read file content
+        audio_bytes = await file.read()
+        transcription = transcribe_audio_local(audio_bytes)
+        return {"source": "local", "transcription": transcription}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
