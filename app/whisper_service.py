@@ -3,7 +3,7 @@ import torch
 import tempfile
 
 # Load Whisper Tiny pipeline once
-pipe = pipeline("automatic-speech-recognition", model="openai/whisper-tiny")
+pipe = pipeline("automatic-speech-recognition", model="openai/whisper-base")
 
 def transcribe_audio_local(audio_bytes: bytes) -> str:
     """
