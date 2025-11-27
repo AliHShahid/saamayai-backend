@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-python-multipart
 transformers
-torch
-numpy
-pydantic
+torch==2.9.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
+python-multipart
+huggingface-hub
