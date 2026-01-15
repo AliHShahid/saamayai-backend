@@ -18,7 +18,7 @@
 #         return result["text"]
 
 import logging
-from transformers import pipeline
+from transformers import pipeline, WhisperProcessor, WhisperForConditionalGeneration
 import torch
 
 # Setup logging
@@ -34,14 +34,20 @@ def get_model():
     global _speech_recognizer
     if _speech_recognizer is None:
         logger.info("⏳ Loading Whisper model... (This might take a moment on first run)")
-        
-        # Use "openai/whisper-tiny" for speed on CPU, or "openai/whisper-base" for better accuracy
-        # device=0 uses GPU if available, otherwise CPU
+
+        model_name = "openai/whisper-small"
+
+        processor = WhisperProcessor.from_pretrained(model_name)
+        model = WhisperForConditionalGeneration.from_pretrained(model_name)
+
         device = 0 if torch.cuda.is_available() else -1
         
         _speech_recognizer = pipeline(
             "automatic-speech-recognition", 
-            model="openai/whisper-base", 
+            model=model, 
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            # return_timestamps=True,
             device=device
         )
         logger.info("✅ Whisper model loaded successfully.")
