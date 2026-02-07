@@ -1,9 +1,13 @@
 import json
 import logging
 import difflib
+import os
+import re
 from typing import Dict, List, Any
 
-logger = logging.getLogger(__name__)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("saamay-backend")
 
 class MistakeService:
     _instance = None
@@ -16,78 +20,141 @@ class MistakeService:
         return cls._instance
 
     def _load_quran_data(self):
-        """Loads the Quran JSON file into memory."""
+        """Loads the Quran JSON file into memory with robust path finding."""
+        possible_paths = [
+            "/root/assets/json/all_ayat.json",
+            "assets/json/all_ayat.json",
+            os.path.join(os.path.dirname(__file__), "../assets/json/all_ayat.json")
+        ]
+
+        json_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                json_path = path
+                break
+        
+        if not json_path:
+            logger.error("❌ CRITICAL: 'all_ayat.json' NOT FOUND.")
+            return
+
         try:
-            # Adjust path as needed. Assuming it's in the same app folder or root assets.
-            # Ideally, pass the path from config. Here we assume a standard location.
-            # Compiling 'all_ayat.json' into a lookup dict.
-            # You might need to upload this file to the backend folder too.
-            with open("assets/json/all_ayat.json", "r", encoding="utf-8") as f:
+            with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Ensure we handle the structure correctly (e.g., if it's nested under "tafsir")
+                # The JSON structure has a 'tafsir' key containing Ayah mappings
                 self._quran_data = data.get("tafsir", data)
-            logger.info("✅ Quran text data loaded successfully.")
+            logger.info(f"✅ Successfully loaded {len(self._quran_data)} Ayahs.")
         except Exception as e:
-            logger.error(f"❌ Failed to load Quran data: {e}")
-            self._quran_data = {}
+            logger.error(f"❌ Error parsing JSON: {e}")
 
-    def get_reference_text(self, surah: int) -> str:
-        """Concatenates all ayahs of a Surah into one string for comparison."""
-        full_text = []
-        # Basic loop - assumes standard ayah counts or just iterates available keys
-        # A more robust way is to iterate keys starting with "{surah}_"
-        prefix = f"{surah}_"
-        sorted_keys = sorted([k for k in self._quran_data.keys() if k.startswith(prefix)], 
-                             key=lambda x: int(x.split('_')[1]))
-        
-        for key in sorted_keys:
-            full_text.append(self._quran_data[key]['text'])
-        
-        return " ".join(full_text)
+    def get_ayah_text(self, surah: int, ayah: int) -> str:
+        """Fetch original text for a specific single Ayah."""
+        key = f"{surah}_{ayah}"
+        return self._quran_data.get(key, {}).get('text', "")
 
-    def detect_mistakes(self, transcribed_text: str, surah_number: int) -> Dict[str, Any]:
+    def remove_tashkeel(self, text: str) -> str:
+        """Normalizes Arabic text by removing diacritics and unifying characters."""
+        if not text: return ""
+        # Remove Tashkeel (vowel marks)
+        text = re.sub(r'[\u0617-\u061A\u064B-\u0652]', '', text)
+        # Remove Tatweel (decoration)
+        text = re.sub(r'\u0640', '', text)
+        # Unify Alifs
+        text = re.sub(r'[أإآ]', 'ا', text)
+        # Unify Ya / Alif Maqsura
+        text = re.sub(r'ى', 'ي', text)
+        # Unify Ta Marbuta
+        text = re.sub(r'ة', 'ه', text)
+        # Remove punctuation
+        text = re.sub(r'[،.؛:!؟?"\'\(\)\[\]\{\}-]', '', text)
+        return text
+
+    def detect_mistakes(self, transcribed_text: str, surah: int, ayah: int) -> Dict[str, Any]:
         """
-        Compares transcribed text with reference Surah text.
-        Returns a list of word-by-word diffs.
+        Compare user transcription vs a specific reference Ayah.
+        Returns word-by-word status and absolute accuracy percentage.
         """
-        reference_text = self.get_reference_text(surah_number)
+        reference_text = self.get_ayah_text(surah, ayah)
         
-        # Simple normalization (remove punctuation, tashkeel if necessary)
-        # For now, we assume Whisper output is close to reference
+        if not reference_text:
+            return {"error": "Ayah not found"}
+
+        # Normalize for comparison
+        norm_ref = self.remove_tashkeel(reference_text)
+        norm_user = self.remove_tashkeel(transcribed_text)
         
-        user_words = transcribed_text.split()
-        ref_words = reference_text.split()
-        
-        # Use SequenceMatcher to find differences
+        user_words = norm_user.strip().split()
+        ref_words = norm_ref.strip().split()
+        original_ref_words = reference_text.strip().split()
+
         matcher = difflib.SequenceMatcher(None, ref_words, user_words)
         diffs = []
         
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag == 'equal':
-                for word in ref_words[i1:i2]:
+                for k in range(i1, i2):
+                    word = original_ref_words[k] if k < len(original_ref_words) else ref_words[k]
                     diffs.append({"word": word, "status": "correct"})
             elif tag == 'replace':
-                for word in ref_words[i1:i2]:
-                    diffs.append({"word": word, "status": "wrong", "said": user_words[j1:j2]})
+                for k in range(i1, i2):
+                    word = original_ref_words[k] if k < len(original_ref_words) else ref_words[k]
+                    said_word = " ".join(user_words[j1:j2])
+                    diffs.append({"word": word, "status": "wrong", "said": said_word})
             elif tag == 'delete':
-                for word in ref_words[i1:i2]:
-                    diffs.append({"word": word, "status": "missing"})
+                is_trailing = (i2 == len(ref_words))
+                status = "pending" if is_trailing else "missing"
+                for k in range(i1, i2):
+                    word = original_ref_words[k] if k < len(original_ref_words) else ref_words[k]
+                    diffs.append({"word": word, "status": status})
             elif tag == 'insert':
-                # User added extra words not in Quran
                 for word in user_words[j1:j2]:
                     diffs.append({"word": word, "status": "extra"})
 
-        # Calculate accuracy score
-        total_words = len(ref_words)
-        correct_words = sum(1 for d in diffs if d['status'] == 'correct')
-        accuracy = (correct_words / total_words) * 100 if total_words > 0 else 0
+        # Calculate Accuracy (ignoring pending words at the end)
+        effective_ref_words = [d for d in diffs if d['status'] != 'pending']
+        total_effective = len(effective_ref_words)
+        correct = sum(1 for d in effective_ref_words if d['status'] == 'correct')
+        accuracy = (correct / total_effective) * 100 if total_effective > 0 else 0
 
         return {
-            "surah": surah_number,
+            "surah": surah,
+            "ayah": ayah,
             "accuracy": round(accuracy, 2),
             "diff": diffs,
             "transcription": transcribed_text
         }
 
-# Singleton instance
+    def detect_mistakes_continuous(self, transcript: str, surah: int, start_ayah_hint: int = 1) -> Dict[str, Any]:
+        """
+        Real-time matching logic for streaming audio.
+        Uses a search window to automatically detect which Ayah the user is reciting.
+        """
+        normalized_transcript = self.remove_tashkeel(transcript.strip())
+        if not normalized_transcript or len(normalized_transcript) < 5:
+            return {}
+
+        best_match_ayah = None
+        best_ratio = 0.0
+
+        # Look ahead 4 verses from the hint for better coverage
+        search_range = range(start_ayah_hint, start_ayah_hint + 4)
+
+        for ayah_num in search_range:
+            ref_text = self.get_ayah_text(surah, ayah_num)
+            if not ref_text: continue
+
+            norm_ref = self.remove_tashkeel(ref_text)
+            matcher = difflib.SequenceMatcher(None, norm_ref, normalized_transcript)
+            ratio = matcher.ratio()
+
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match_ayah = ayah_num
+
+        # Match threshold (40% similarity)
+        if best_match_ayah and best_ratio > 0.4:
+            logger.info(f"🎯 Match Found! Ayah {best_match_ayah} (Score: {best_ratio:.2f})")
+            return self.detect_mistakes(transcript, surah, best_match_ayah)
+        
+        return {}
+
 mistake_service = MistakeService()

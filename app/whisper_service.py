@@ -1,79 +1,87 @@
-# from transformers import pipeline
-# import torch
-# import tempfile
-
-# # Load Whisper Tiny pipeline once
-# pipe = pipeline("automatic-speech-recognition", model="openai/whisper-base")
-
-# def transcribe_audio_local(audio_bytes: bytes) -> str:
-#     """
-#     Transcribe audio bytes using Whisper Tiny pipeline
-#     """
-#     # Save bytes to a temporary file
-#     with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
-#         tmp.write(audio_bytes)
-#         tmp.flush()
-#         # Transcribe with pipeline
-#         result = pipe(tmp.name)
-#         return result["text"]
-
-import logging
-from transformers import pipeline, WhisperProcessor, WhisperForConditionalGeneration
 import torch
+import librosa
+import logging
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
-# Setup logging
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global variable to hold the model in memory
-_speech_recognizer = None
+# Global cache
+_model_cache = None
 
-def get_model():
+def get_model_components():
     """
-    Singleton pattern to load the model only once.
+    Loads the Processor and Model manually.
+    This bypasses the 'pipeline' abstraction to avoid ffmpeg/metadata errors.
     """
-    global _speech_recognizer
-    if _speech_recognizer is None:
-        logger.info("⏳ Loading Whisper model... (This might take a moment on first run)")
-
-        model_name = "openai/whisper-small"
-
-        processor = WhisperProcessor.from_pretrained(model_name)
-        model = WhisperForConditionalGeneration.from_pretrained(model_name)
-
-        device = 0 if torch.cuda.is_available() else -1
+    global _model_cache
+    if _model_cache is None:
+        logger.info("⬇️ Loading Whisper Model & Processor (Manual Mode)...")
         
-        _speech_recognizer = pipeline(
-            "automatic-speech-recognition", 
-            model=model, 
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            # return_timestamps=True,
-            device=device
-        )
-        logger.info("✅ Whisper model loaded successfully.")
-    
-    return _speech_recognizer
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        
+        try:
+            # 1. Load Processor (Handles audio -> numbers)
+            processor = WhisperProcessor.from_pretrained("openai/whisper-small")
+            
+            # 2. Load Model (Handles numbers -> text)
+            model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-small")
+            model.to(device)
+            
+            # Optimization for GPU
+            if device == "cuda:0":
+                model = model.half() # Convert to FP16 for speed
+                
+            logger.info(f"🚀 Model loaded on {device} ({torch_dtype})")
+            _model_cache = (processor, model, device, torch_dtype)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load model: {e}")
+            raise e
+
+    return _model_cache
 
 def transcribe_audio_local(file_path: str) -> str:
-    """
-    Transcribe audio file from a specific path using local Whisper model.
-    """
     try:
-        pipe = get_model()
+        logger.info(f"🎤 Processing audio: {file_path}")
         
-        # The pipeline handles loading the audio file directly from path
-        result = pipe(
-            file_path,
-            return_timestamps=True,
-            generate_kwargs={
-                "language": "arabic", 
-                "task": "transcribe"
-            }
-            )
+        processor, model, device, torch_dtype = get_model_components()
         
-        text = result.get("text", "")
-        return text.strip()
+        # 1. Load Audio with Librosa (Forces 16kHz)
+        # This returns a simple numpy array of numbers
+        audio_array, _ = librosa.load(file_path, sr=16000)
         
+        # 2. Process Audio (Convert array to Tensor)
+        input_features = processor(
+            audio_array, 
+            sampling_rate=16000, 
+            return_tensors="pt"
+        ).input_features
+        
+        # Move inputs to the correct device/datatype
+        input_features = input_features.to(device)
+        if device == "cuda:0":
+            input_features = input_features.half()
+
+        # 3. Generate Tokens (Force Arabic)
+        # We manually tell the model to use Arabic logic
+        forced_decoder_ids = processor.get_decoder_prompt_ids(language="arabic", task="transcribe")
+        
+        predicted_ids = model.generate(
+            input_features, 
+            forced_decoder_ids=forced_decoder_ids,
+            max_new_tokens=256
+        )
+        
+        # 4. Decode Tokens to Text
+        transcription = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        
+        transcription = transcription.strip()
+        logger.info(f"✅ Transcription Success: {transcription}")
+        return transcription
+
     except Exception as e:
-        logger.error(f"Error during transcription: {e}")
-        raise e
+        logger.error(f"❌ Manual Transcription Error: {e}")
+        return ""

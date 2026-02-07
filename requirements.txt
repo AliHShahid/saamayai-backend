@@ -7,3 +7,4 @@ huggingface-hub
 torchaudio
 librosa
 soundfile
+pydub
