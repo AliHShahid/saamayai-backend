@@ -4,9 +4,22 @@ import sys
 
 # 1. Define the build step
 def download_model():
-    from transformers import pipeline
-    print("⬇️ Downloading Whisper Small model...")
-    pipeline("automatic-speech-recognition", model="openai/whisper-small")
+    from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
+    from peft import PeftModel
+    import torch
+    
+    print("⬇️ Downloading Whisper model and adapter...")
+    m = "alihassanshahid/whisper_everyayah"
+    base = "openai/whisper-small"
+    
+    # Download processor from the adapter repo
+    AutoProcessor.from_pretrained(m)
+    
+    # Load base model and adapter to ensure they are cached
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(base, torch_dtype=torch.float16)
+    model = PeftModel.from_pretrained(model, m)
+    # Merging ensures the model is ready for fast inference
+    model.merge_and_unload()
 
 # 2. Define the Image (Attach files HERE now)
 # 2. Define the Image
@@ -25,7 +38,8 @@ image = (
         "soundfile",
         "pydub",
         "numpy",
-        "accelerate"
+        "accelerate",
+        "peft"
     )
     .env({"HF_HOME": "/root/.cache/huggingface"})
     .run_function(download_model)

@@ -29,11 +29,11 @@ def home():
 
 @app.get("/warmup")
 def warmup():
-    """Triggers model loading so the first transcription is fast."""
+    """Triggers model loading AND dummy inference so the first transcription is fast."""
     try:
-        from app.whisper_service import get_model_components
-        get_model_components()
-        return {"status": "success", "message": "Model warmed up"}
+        from app.whisper_service import warmup_inference
+        warmup_inference()
+        return {"status": "success", "message": "Model warmed up & inferred"}
     except Exception as e:
         logger.error(f"Warmup Error: {e}")
         return {"status": "error", "message": str(e)}

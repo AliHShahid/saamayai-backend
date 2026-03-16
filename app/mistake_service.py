@@ -22,9 +22,9 @@ class MistakeService:
     def _load_quran_data(self):
         """Loads the Quran JSON file into memory with robust path finding."""
         possible_paths = [
-            "/root/assets/json/all_ayat.json",
-            "assets/json/all_ayat.json",
-            os.path.join(os.path.dirname(__file__), "../assets/json/all_ayat.json")
+            "/root/assets/json/quran.json",
+            "assets/json/quran.json",
+            os.path.join(os.path.dirname(__file__), "../assets/json/quran.json")
         ]
 
         json_path = None
@@ -34,38 +34,97 @@ class MistakeService:
                 break
         
         if not json_path:
-            logger.error("❌ CRITICAL: 'all_ayat.json' NOT FOUND.")
+            logger.error("❌ CRITICAL: 'quran.json' NOT FOUND.")
             return
 
         try:
             with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # The JSON structure has a 'tafsir' key containing Ayah mappings
-                self._quran_data = data.get("tafsir", data)
-            logger.info(f"✅ Successfully loaded {len(self._quran_data)} Ayahs.")
+                self._quran_data = json.load(f)
+            logger.info(f"✅ Successfully loaded Quran data for {len(self._quran_data)} Surahs.")
         except Exception as e:
             logger.error(f"❌ Error parsing JSON: {e}")
 
     def get_ayah_text(self, surah: int, ayah: int) -> str:
         """Fetch original text for a specific single Ayah."""
-        key = f"{surah}_{ayah}"
-        return self._quran_data.get(key, {}).get('text', "")
+        try:
+            surah_str = str(surah)
+            if surah_str in self._quran_data:
+                surah_ayahs = self._quran_data[surah_str]
+                # Ayah numbers are 1-indexed, list is 0-indexed
+                idx = ayah - 1
+                if 0 <= idx < len(surah_ayahs):
+                    return surah_ayahs[idx].get('text', "")
+        except Exception as e:
+            logger.error(f"Error fetching ayah {surah}:{ayah} - {e}")
+        
+        return ""
 
     def remove_tashkeel(self, text: str) -> str:
         """Normalizes Arabic text by removing diacritics and unifying characters."""
         if not text: return ""
-        # Remove Tashkeel (vowel marks)
-        text = re.sub(r'[\u0617-\u061A\u064B-\u0652]', '', text)
-        # Remove Tatweel (decoration)
-        text = re.sub(r'\u0640', '', text)
-        # Unify Alifs
-        text = re.sub(r'[أإآ]', 'ا', text)
-        # Unify Ya / Alif Maqsura
-        text = re.sub(r'ى', 'ي', text)
-        # Unify Ta Marbuta
-        text = re.sub(r'ة', 'ه', text)
-        # Remove punctuation
+        
+        # 1. Unify Alefs (including Alef Wasla 0671 and Dagger Alef 0670 -> Regular Alef)
+        text = re.sub(r'[\u0622\u0623\u0625\u0671\u0670]', '\u0627', text)
+        
+        # 2. Unify Ya / Alif Maqsura
+        text = re.sub(r'[\u0649\u064A]', '\u064A', text) # Unify ى and ي to ي
+        
+        # 3. Unify Ta Marbuta
+        text = re.sub(r'\u0629', '\u0647', text) # Unify ة to ه
+        
+        # 4. Remove Quranic Marks & Tashkeel
+        # \u0610-\u061A : Honorifics/Marks
+        # \u0640      : Tatweel
+        # \u064B-\u065F : Harakat (Fathatan..Sukun..Shadda..etc)
+        # \u06D6-\u06ED : Quranic Pauses/Marks (Sajdah, Rub, etc.)
+        pattern = r'[\u0610-\u061A\u0640\u064B-\u065F\u06D6-\u06ED]'
+        # Note: 0670 (Dagger Alef) is NOT removed here, it was mapped to Alef above.
+        text = re.sub(pattern, '', text)
+        
+        # 5. Remove Punctuation
         text = re.sub(r'[،.؛:!؟?"\'\(\)\[\]\{\}-]', '', text)
+        
+        # 6. Fix Common Imla'i Exceptions (Where Dagger Alef should be dropped, not mapped to Alef)
+        # Sequence: Dagger became Alif. e.g., 'الرحمان' -> 'الرحمن'
+        # Note: We are operating on text with NO diacritics now.
+        
+        # Allah: ٱللَّهِ -> (Wasla->A) (Lam) (Lam) (Shadda->Gone) (Dagger->A) (Ha) -> ا ل ل ا ه
+        # Standard: الله -> ا ل ل ه
+        text = re.sub(r'الل\s*اه', 'الله', text) # Fix Allah
+        
+        # Rahman: ٱلرَّحۡمَٰنِ -> (Wasla->A) (Lam) (Ra) ... (Meem) (Dagger->A) (Noon) -> الرحمان
+        # Standard: الرحمن
+        text = re.sub(r'الرحمان', 'الرحمن', text)
+        
+        # Haza: هَٰذَا -> ه ا ذ ا -> هاذا
+        # Standard: هذا
+        text = re.sub(r'\bهاذا\b', 'هذا', text)
+        
+        # Zalik: ذَٰلِكَ -> ذالك
+        # Standard: ذلك
+        text = re.sub(r'\bذالك\b', 'ذلك', text)
+        
+        # Lakin: لَٰكِن -> لاكن
+        # Standard: لكن
+        text = re.sub(r'\bلاكن\b', 'لكن', text)
+        
+        # Ulaik: أُوْلَـٰٓئِكَ -> (Hamza->A) (Waw) (Lam) (Dagger->A) (Hamza-Yeh->Yeh) (Kaf) -> اولايىك?
+        # Standard: اولئك
+        # Complex. Let's see. 
+        # Ref: أ 0623 -> A. 
+        # Waw 0648 -> W.
+        # Lam 0644 -> L.
+        # Dagger 0670 -> A.
+        # Hamza on Yeh 0626. kept? yes.
+        # Result: ا و ل ا ئ ك (Awla'ik)
+        # User: ا و ل ئ ك (Ula'ik).
+        # Fix:
+        text = re.sub(r'اولائك', 'اولئك', text)
+        
+        # Ilah: إِلَٰه -> (Hamza->A) (Lam) (Dagger->A) (Ha) -> ال اه -> الاه
+        # Standard: اله (or إله) -> (Hamza->A) (Lam) (Ha) -> اله
+        text = re.sub(r'\bالاه\b', 'اله', text)
+
         return text
 
     def detect_mistakes(self, transcribed_text: str, surah: int, ayah: int) -> Dict[str, Any]:

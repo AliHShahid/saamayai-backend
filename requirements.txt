@@ -8,3 +8,4 @@ torchaudio
 librosa
 soundfile
 pydub
+peft
