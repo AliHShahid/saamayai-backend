@@ -9,7 +9,7 @@ def download_model():
     import torch
     
     print("⬇️ Downloading Whisper model and adapter...")
-    m = "alihassanshahid/whisper_everyayah"
+    m = "alihassanshahid/Saamay_arabic_whisper_small"
     base = "openai/whisper-small"
     
     # Download processor from the adapter repo
